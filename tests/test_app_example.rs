@@ -1,62 +1,71 @@
-#![allow(non_upper_case_globals)]
-#![allow(non_camel_case_types)]
-#![allow(non_snake_case)]
-#![allow(unused)]
 #![feature(c_variadic)]
+#[allow(non_upper_case_globals, non_camel_case_types, non_snake_case, unused)]
+#[path = "../bindings/source/app/app_example.rs"]
+pub mod app_example;
+use app_example::*;
 
-include!("../bindings/app_example.rs");
-mod outer1 {
-include!("../mocks/mock_util_example.rs");
-}
-
-mod outer2 {
-include!("../mocks/mock_lib_example.rs");
-}
-
-/*
-
-32 bit : apt-get install gcc-multilib
-sudo pip3 install gcovr
-cargo install grcov
-rustup component add llvm-tools-preview
-
-CARGO_INCREMENTAL=0 RUSTFLAGS='-Cinstrument-coverage' LLVM_PROFILE_FILE='cargo-test-%p-%m.profraw' cargo test
-
-grcov . --binary-path ./target/debug/deps/ -s .. -t html --branch --ignore-not-existing -o target/coverage/html
-
-*/
-
-
-use mockall::*;
-use mockall::{automock, mock, predicate::*};
-use mockall_double::double;
-/* 
-mod outer {
-    use mockall::automock;
-
-    #[automock]
-    pub mod ffi {
-        include!("../bindings/log.rs");
-    }
-}*/
-
-#[double]
-use outer2::ffi;
+#[allow(non_snake_case, unused)]
+#[path = "../mocks/source/app/app_example_mocks.rs"]
+pub mod mocks;
+use mocks::*;
 
 #[cfg(test)]
-mod app_init {
+mod app_tests {
     use super::*;
 
     #[test]
-    fn init__success() {
-        
-        let mock = ffi::lib_init_context();
-        mock.expect().once().return_const(true);
+    fn test_app_init() {
+        // Pre Actions
+        let ctx_init = lib_example_init_context();
+        ctx_init.expect().once().returning(|| true);
 
+        // Test Steps
         unsafe {
-            app_init();
+            // Step 1
+            app_example_init();
+        }
+
+        // Post Actions
+        let ctx_deinit = lib_example_deinit_context();
+        ctx_deinit.expect().returning(|| ());
+        unsafe { app_example_deinit(); }
+    }
+    
+    #[test]
+    fn test_app_run_uninitialized() {
+        // Test Steps
+        unsafe {
+            // Step 1
+            let res = app_example_run();
+
+            // Step 2
+            assert_eq!(res, 1);
         }
     }
+    
+    #[test]
+    fn test_app_run_first_iteration() {
+        // Pre Actions
+        let ctx_init = lib_example_init_context();
+        ctx_init.expect().once().returning(|| true);
+        unsafe { app_example_init(); }
 
-    // another tests for util_sum
+        // Expected Calls
+        let ctx_run = lib_example_show_int32_context();
+        ctx_run.expect().once().with(mockall::predicate::eq(13)).returning(|_| true);
+
+        // Test Steps
+        unsafe {
+            // Step 1
+            let res = app_example_run();
+
+            // Step 2
+            assert_eq!(res, 0);
+        }
+
+        // Post Actions
+        let ctx_deinit = lib_example_deinit_context();
+        ctx_deinit.expect().returning(|| ());
+        unsafe { app_example_deinit(); }
+    }
 }

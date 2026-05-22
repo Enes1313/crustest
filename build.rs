@@ -1,33 +1,76 @@
+use std::path::{PathBuf};
+use glob::glob;
+use serde::Deserialize;
+
+#[derive(Deserialize, Debug)]
+#[allow(dead_code)]
+struct CompileCommand {
+    directory: String,
+    command: String,
+    file: String,
+}
+
+#[derive(Debug, Default)]
+struct ExtractedArgs {
+    includes: std::collections::HashSet<String>,
+    defines: std::collections::HashSet<String>,
+}
+
+fn extract_args_from_compile_commands(path: &std::path::Path) -> ExtractedArgs {
+    let mut extracted = ExtractedArgs::default();
+    if let Ok(content) = std::fs::read_to_string(path) {
+        if let Ok(commands) = serde_json::from_str::<Vec<CompileCommand>>(&content) {
+            for cmd in commands {
+                let mut parts = cmd.command.split_whitespace().peekable();
+                let dir_path = std::path::Path::new(&cmd.directory);
+                
+                while let Some(part) = parts.next() {
+                    if part == "-I" || part == "-isystem" {
+                        if let Some(next) = parts.next() {
+                            let p = std::path::Path::new(next);
+                            let resolved = if p.is_absolute() { p.to_path_buf() } else { dir_path.join(p) };
+                            extracted.includes.insert(resolved.to_string_lossy().into_owned());
+                        }
+                    } else if part.starts_with("-I") || part.starts_with("-isystem") {
+                        let path_str = if part.starts_with("-isystem") {
+                            part.strip_prefix("-isystem").unwrap()
+                        } else {
+                            part.strip_prefix("-I").unwrap()
+                        };
+                        let p = std::path::Path::new(path_str);
+                        let resolved = if p.is_absolute() { p.to_path_buf() } else { dir_path.join(p) };
+                        extracted.includes.insert(resolved.to_string_lossy().into_owned());
+                    } else if part == "-D" {
+                        if let Some(next) = parts.next() {
+                            extracted.defines.insert(next.to_string());
+                        }
+                    } else if part.starts_with("-D") {
+                        extracted.defines.insert(part.strip_prefix("-D").unwrap().to_string());
+                    }
+                }
+            }
+        }
+    }
+    extracted
+}
+
 /// Represents the `package.metadata.foreigntest` configuration table
-///
-/// The foreigntest crate can be configured through a `package.metadata.foreigntest` table
-/// in the `Cargo.toml` file of the kernel. This struct represents the parsed configuration
-/// options.
+/// This configuration is loaded directly from Cargo.toml to manage the C test environment.
 #[derive(Debug, Default)]
 struct Config {
-    /// The project path to test
-    ///
-    /// The path must be `absolute`.
+    /// Relative or absolute path to the main C project
     pub project_path: String,
-    /// The run command that is invoked on `bootimage run` or `bootimage runner`
-    ///
-    /// The path must be `relative` to the `project_path`.
+    /// Path to compile_commands.json for clang tooling (optional)
     pub compile_commands_path: String,
-    /// Additional arguments passed to the runner for test binaries
-    ///
-    /// The paths must be `relative` to the `project_path`.
+    /// Custom support header files to include
     pub support_header_files_path: Option<String>,
-    /// Additional arguments passed to the runner for not-test binaries
-    ///
-    /// The paths must be `relative` to the `project_path`.
+    /// Glob patterns for files to exclude from mocking/binding
     pub exclude_header_files_paths: Option<Vec<String>>,
-    /// Additional arguments passed to the runner for test binaries
-    ///
-    /// The paths must be `relative` to the `project_path`.
+    /// Glob patterns for extra files to forcefully include
     pub extra_header_files_paths: Option<Vec<String>>,
-    /// Compiler args
+    /// Custom C compiler arguments (e.g., -std=c99, -fprofile-arcs)
     pub compile_args: Option<Vec<String>>,
-    /// Linker args
+    /// Custom Linker arguments (e.g., -lm, --coverage)
     pub linker_args: Option<Vec<String>>,
 }
 
@@ -41,9 +84,7 @@ fn read_config(manifest_path: &std::path::Path) -> Option<Config> {
         std::io::Read::read_to_string(&mut manifest_file, &mut content)
             .expect("Failed to read Cargo.toml");
 
-        content
-            .parse::<toml::Value>()
-            .expect("Failed to parse Cargo.toml")
+        content.parse::<toml::Value>().expect("Failed to parse Cargo.toml")
     };
 
     let foreigntest = cargo_toml
@@ -68,12 +109,10 @@ fn read_config(manifest_path: &std::path::Path) -> Option<Config> {
                 config.support_header_files_path = Some(support_header_files_path);
             }
             ("exclude_header_files_paths", toml::Value::Array(exclude_header_files_paths)) => {
-                config.exclude_header_files_paths =
-                    Some(parse_string_array(exclude_header_files_paths));
+                config.exclude_header_files_paths = Some(parse_string_array(exclude_header_files_paths));
             }
             ("extra_header_files_paths", toml::Value::Array(extra_header_files_paths)) => {
-                config.extra_header_files_paths =
-                    Some(parse_string_array(extra_header_files_paths));
+                config.extra_header_files_paths = Some(parse_string_array(extra_header_files_paths));
             }
             ("compile_args", toml::Value::Array(compile_args)) => {
                 config.compile_args = Some(parse_string_array(compile_args));
@@ -81,9 +120,7 @@ fn read_config(manifest_path: &std::path::Path) -> Option<Config> {
             ("linker_args", toml::Value::Array(linker_args)) => {
                 config.linker_args = Some(parse_string_array(linker_args));
             }
-            _ => {
-                return None;
-            }
+            _ => return None,
         }
     }
     Some(config)
@@ -92,248 +129,337 @@ fn read_config(manifest_path: &std::path::Path) -> Option<Config> {
 fn parse_string_array(array: Vec<toml::Value>) -> Vec<String> {
     let mut parsed = Vec::new();
     for value in array {
-        match value {
-            toml::Value::String(s) => parsed.push(s),
-            _ => (),
+        if let toml::Value::String(s) = value {
+            parsed.push(s);
         }
     }
     parsed
 }
 
+fn is_excluded(path: &PathBuf, exclude_patterns: &Option<Vec<String>>, project_path: &PathBuf) -> bool {
+    if let Some(excludes) = exclude_patterns {
+        for ex in excludes {
+            let mut pattern = ex.clone();
+            if pattern.ends_with("**") {
+                pattern.push_str("/*");
+            }
+            
+            let ex_dir = project_path.join(ex.replace("**", ""));
+            if path.starts_with(&ex_dir) {
+                return true;
+            }
+        }
+    }
+    false
+}
+
+
 fn main() {
-    // Cargo sets a CARGO_MANIFEST_DIR environment variable for all runner
-    // executables. This variable contains the path to the Cargo.toml of the
-    // crate that the executable belongs to (i.e. not the project root
-    // manifest for workspace projects)
     let manifest_dir = std::env::var("CARGO_MANIFEST_DIR").expect("Failed to find manifest dir.");
     let manifest_path = std::path::Path::new(&manifest_dir).join("Cargo.toml");
     let config = read_config(&manifest_path).expect("Failed to read config");
 
-    // println!("config: {:#?}", config);
-
     let project_path = std::path::PathBuf::from(config.project_path)
         .canonicalize()
         .expect("Failed to canonicalize path");
-    println!("project_path: {:#?}", project_path.to_str());
 
-    let compile_commands_path = project_path.join(config.compile_commands_path);
-    println!(
-        "compile_commands_path: {:#?}",
-        compile_commands_path.to_str()
-    );
+    let extracted_args = extract_args_from_compile_commands(&project_path.join(&config.compile_commands_path));
 
-        // TODO: find headers from project paths and use compile_commands_path
-        let c_header_files_paths_to_binding_str = vec![
-            "source/app/app_example.h",
-            "source/util/util_example.h",
-            "lib/lib_example.h",
-        ];
+    let bindings_path = std::path::PathBuf::from("bindings");
+    let mocks_path = std::path::PathBuf::from("mocks");
+    
+    std::fs::create_dir_all(&bindings_path).unwrap();
+    std::fs::create_dir_all(&mocks_path).unwrap();
 
-        // bindings
+        let spec_path = std::path::Path::new(&manifest_dir).join("spec");
+    let mut c_sources_to_compile = std::collections::HashSet::new();
 
-        let bindings_path = std::path::PathBuf::from("bindings");
+    struct SpecData {
+        name: String,
+        headers: Vec<std::path::PathBuf>,
+        mock_headers: Vec<std::path::PathBuf>,
+    }
+    let mut specs_data = Vec::new();
 
-        // bindgen
-        // https://github.com/rust-lang/rust-bindgen/issues/1949
-        // install clang
-        
-        for c_file_path_str in c_header_files_paths_to_binding_str {
-            let c_file_to_bind_path = project_path.join(c_file_path_str);
+    if spec_path.exists() {
+        for entry in glob(spec_path.join("**/*.toml").to_str().unwrap()).expect("Failed to read spec glob") {
+            if let Ok(path) = entry {
+                let content = std::fs::read_to_string(&path).unwrap();
+                if let Ok(value) = content.parse::<toml::Value>() {
+                    let relative_spec_path = path.strip_prefix(&spec_path).unwrap();
+                    let spec_name = relative_spec_path.file_stem().unwrap().to_str().unwrap().to_string();
+                    
+                    let mut spec_headers = Vec::new();
+                    let mut spec_mock_headers = Vec::new();
 
-            bindgen::Builder::default()
-                .header(
-                    c_file_to_bind_path
-                        .to_str()
-                        .expect("Path is not a valid string"),
-                )
-                .clang_arg("-I")
-                .use_core()
-                .allowlist_file(project_path.to_str().unwrap().to_string() + ".*")
-                .layout_tests(false)
-                .parse_callbacks(Box::new(bindgen::CargoCallbacks))
-                .generate()
-                .unwrap()
-                .write_to_file(
-                    bindings_path.join(
-                        c_file_to_bind_path
-                            .file_stem()
-                            .unwrap()
-                            .to_str()
-                            .unwrap()
-                            .to_string()
-                            + ".rs",
-                    ),
-                )
-                .unwrap();
+                    // Parse [headers] or fallback to [module]
+                    if let Some(headers) = value.get("headers").and_then(|v| v.as_array()) {
+                        for header_val in headers {
+                            if let Some(h_path) = header_val.as_str() {
+                                spec_headers.push(project_path.join(h_path));
+                            }
+                        }
+                    } else if let Some(header_rel_path) = value.get("module").and_then(|v| v.get("header")).and_then(|v| v.as_str()) {
+                        spec_headers.push(project_path.join(header_rel_path));
+                    } else {
+                        // Fallback Inference
+                        let module_h = project_path.join(relative_spec_path.with_extension("h"));
+                        spec_headers.push(module_h);
+                    }
+
+                    if let Some(mocks) = value.get("mocks").and_then(|v| v.as_array()) {
+                        for mock_val in mocks {
+                            if let Some(mock_rel_path) = mock_val.as_str() {
+                                let mock_h = project_path.join(format!("{}.h", mock_rel_path));
+                                spec_mock_headers.push(mock_h);
+                            }
+                        }
+                    }
+
+                    if let Some(sources) = value.get("sources").and_then(|v| v.as_array()) {
+                        for src_val in sources {
+                            if let Some(src_rel_path) = src_val.as_str() {
+                                let src_c = project_path.join(src_rel_path);
+                                c_sources_to_compile.insert(src_c);
+                            }
+                        }
+                    } else {
+                        // Fallback: If no [sources] block, assume the module itself is the only source
+                        let src_c = project_path.join(relative_spec_path.with_extension("c"));
+                        c_sources_to_compile.insert(src_c);
+                    }
+
+                    specs_data.push(SpecData {
+                        name: spec_name,
+                        headers: spec_headers,
+                        mock_headers: spec_mock_headers,
+                    });
+                }
+            }
         }
-
-        // mocks
-        
-        {
-            let mocks_path = std::path::PathBuf::from("mocks");
-
-            let bindings_str_without_functions = bindgen::Builder::default()
-                .header(
-                    project_path
-                        .join("source/util/util_example.h")
-                        .to_str()
-                        .expect("msg"),
-                )
-                .blocklist_function(".*")
-                .layout_tests(true)
-                .parse_callbacks(Box::new(bindgen::CargoCallbacks))
-                .generate()
-                .expect("Unable to generate bindings")
-                .to_string();
-
-            let mut bindings_str = "#[cfg(test)]\nuse mockall::automock;\n".to_owned();
-            bindings_str.push_str("#[cfg_attr(test, automock)]\npub(crate) mod ffi {\nuse super::*;\n");
-
-            bindings_str.push_str(
-                &bindgen::Builder::default()
-                    .header(
-                        project_path
-                            .join("source/util/util_example.h")
-                            .to_str()
-                            .expect("msg"),
-                    )
-                    .blocklist_type(".*")
-                    .allowlist_function(".*")
-                    .layout_tests(false)
-                    .parse_callbacks(Box::new(bindgen::CargoCallbacks))
-                    .generate()
-                    .expect("Unable to generate bindings")
-                    .to_string(),
-            );
-            bindings_str.push_str("}\n");
-            bindings_str.push_str(&bindings_str_without_functions);
-
-            std::fs::write(mocks_path.join("mock_util_example.rs"), bindings_str.as_bytes())
-                .expect("Couldn't write bindings!");
-        }
-        {
-            let mocks_path = std::path::PathBuf::from("mocks");
-
-            let bindings_str_without_functions = bindgen::Builder::default()
-                .header(
-                    project_path
-                        .join("lib/lib_example.h")
-                        .to_str()
-                        .expect("msg"),
-                )
-                .blocklist_function(".*")
-                .layout_tests(true)
-                .parse_callbacks(Box::new(bindgen::CargoCallbacks))
-                .generate()
-                .expect("Unable to generate bindings")
-                .to_string(); 
-
-            let mut bindings_str = "#[cfg(test)]\nuse mockall::automock;\n".to_owned();
-            bindings_str.push_str("#[cfg_attr(test, automock)]\npub(crate) mod ffi {\nuse super::*;\n");
-
-            bindings_str.push_str(
-                &bindgen::Builder::default()
-                    .header(
-                        project_path
-                            .join("lib/lib_example.h")
-                            .to_str()
-                            .expect("msg"),
-                    )
-                    .blocklist_type(".*")
-                    .allowlist_function(".*")
-                    .layout_tests(false)
-                    .parse_callbacks(Box::new(bindgen::CargoCallbacks))
-                    .generate()
-                    .expect("Unable to generate bindings")
-                    .to_string(),
-            );
-            bindings_str.push_str("}\n");
-            bindings_str.push_str(&bindings_str_without_functions);
-
-            std::fs::write(mocks_path.join("mock_lib_example.rs"), bindings_str.as_bytes())
-                .expect("Couldn't write bindings!");
-        }
-        // compile and linking
-
-        // TODO: 
-        // for util_example : use x
-        // for app_example : use y
-
-        // let x = project_path.join("source/util/util_example.c");
-        let y = project_path.join("source/app/app_example.c");
-        // sources
-        let c_modules_path_for_test = vec![y.to_str().expect("Path is not a valid string")];
-
-        cc::Build::new()
-            .files(c_modules_path_for_test)
-            // .define(var, val)
-            // .extra_warnings(false)
-            // .flag_if_supported("-Wall")
-            // .flag_if_supported("-Wextra")
-            // .flag_if_supported("-m32") //  apt-get install gcc-multilib for m32
-            .flag_if_supported("-std=c99")
-            .flag_if_supported("-funsigned-char")
-            .flag_if_supported("-Wno-missing-field-initializers")
-            // .flag_if_supported("-fprofile-arcs")
-            // .flag_if_supported("-ftest-coverage")
-            .includes(vec![project_path
-                .join("source/app/app_example.h")
-                .parent()
-                .unwrap()
-                .to_str()
-                .expect("msg"),
-                project_path
-                .join("lib/lib_example.h")
-                .parent()
-                .unwrap()
-                .to_str()
-                .expect("msg"),
-                project_path
-                .join("source/util/util_example.h")
-                .parent()
-                .unwrap()
-                .to_str()
-                .expect("msg")])
-            // .object(obj)
-            //.expand();
-            .compile("foo");
-    return;
-    /*
-    if !std::process::Command::new("clang")
-        .arg("-std=c99")
-        .arg("-Wall")
-        .arg("-Wextra")
-        .arg("-fprofile-arcs")
-        .arg("-ftest-coverage")
-        //.arg("-m32")
-        .arg("-Wno-missing-field-initializers")
-        .arg("-funsigned-char")
-        .arg("-c")
-        .arg("-o")
-        .arg(&obj_path)
-        .arg(sources_path_str)
-        .output()
-        .expect("could not spawn `clang`")
-        .status
-        .success()
-    {
-        // Panic if the command was not successful.
-        panic!("could not compile object file : {}", sources_path_str);
     }
 
-    // Run `ar` to generate the `libhello.a` file from the `hello.o` file.
-    // Unwrap if it is not possible to spawn the process.
-    if !std::process::Command::new("ar")
-        .arg("rcs")
-        .arg(lib_path)
-        .arg(obj_path)
-        .output()
-        .expect("could not spawn `ar`")
-        .status
-        .success()
-    {
-        // Panic if the command was not successful.
-        panic!("could not emit library file");
+    let out_dir = std::env::var("OUT_DIR").unwrap();
+    let out_dir_path = std::path::Path::new(&out_dir);
+
+    // Build Global Base Builder
+    let mut global_base_builder = bindgen::Builder::default();
+    if let Some(ref support_path) = config.support_header_files_path {
+        global_base_builder = global_base_builder.clang_arg(format!("-I{}", project_path.join(support_path).to_string_lossy()));
     }
-    */
+    for inc in &extracted_args.includes {
+        global_base_builder = global_base_builder.clang_arg(format!("-I{}", inc));
+    }
+    for def in &extracted_args.defines {
+        global_base_builder = global_base_builder.clang_arg(format!("-D{}", def));
+    }
+    if let Some(ref args) = config.compile_args {
+        for arg in args {
+            if arg.starts_with("-I") {
+                let path = arg.strip_prefix("-I").unwrap();
+                let full_path = project_path.join(path);
+                global_base_builder = global_base_builder.clang_arg(format!("-I{}", full_path.to_string_lossy()));
+            } else {
+                global_base_builder = global_base_builder.clang_arg(arg.clone());
+            }
+        }
+    }
+
+    // Phase 1: Generate Global Mocks
+    let mut unique_mocks = std::collections::HashMap::new();
+    for spec in &specs_data {
+        for m in &spec.mock_headers {
+            let relative_path = m.strip_prefix(&project_path).unwrap();
+            unique_mocks.insert(relative_path.to_path_buf(), m.clone());
+        }
+    }
+
+    for (rel_path, m) in unique_mocks {
+        let file_stem = rel_path.file_stem().unwrap().to_str().unwrap();
+        let parent_dir = rel_path.parent().unwrap();
+        let out_mock_dir = mocks_path.join(parent_dir);
+        std::fs::create_dir_all(&out_mock_dir).unwrap();
+        
+        let out_mock = out_mock_dir.join(format!("mock_{}.rs", file_stem));
+        
+        let mut mock_str = format!("use mockall::automock;\n\n");
+        mock_str.push_str("#[cfg_attr(test, automock)]\npub(crate) mod ffi {\n");
+        mock_str.push_str("    use super::*;\n");
+        
+        let file_name = m.file_name().unwrap().to_str().unwrap();
+        let allowlist_pattern = format!(".*{}", file_name.replace(".", "\\.").replace("-", "_"));
+
+        let bindings_str_only_functions = global_base_builder.clone()
+            .header(m.to_str().unwrap())
+            .use_core()
+            .layout_tests(false)
+            .blocklist_type(".*")
+            .allowlist_file(&allowlist_pattern)
+            .parse_callbacks(Box::new(bindgen::CargoCallbacks))
+            .generate()
+            .unwrap()
+            .to_string();
+            
+        let mut buffer = String::new();
+        for line in bindings_str_only_functions.lines() {
+            let trimmed = line.trim();
+            if trimmed.starts_with("#[") || trimmed.starts_with("//") {
+                buffer.push_str(line);
+                buffer.push('\n');
+            } else if trimmed.starts_with("pub static ") || trimmed.starts_with("pub mut ") || trimmed.starts_with("pub static mut ") {
+                buffer.clear();
+            } else {
+                mock_str.push_str(&buffer);
+                buffer.clear();
+                mock_str.push_str(line);
+                mock_str.push('\n');
+            }
+        }
+        mock_str.push_str("}\n");
+        mock_str.push_str("pub use mock_ffi::*;\n");
+        std::fs::write(&out_mock, mock_str).unwrap();
+    }
+
+    // Phase 2: Per-Spec Generation
+    for spec in specs_data {
+        // 1. Generate the spec's Umbrella header
+        let umbrella_h_path = out_dir_path.join(format!("{}_umbrella.h", spec.name));
+        let mut umbrella_content = String::new();
+        for h in &spec.headers {
+            umbrella_content.push_str(&format!("#include \"{}\"\n", h.to_str().unwrap()));
+        }
+        for m in &spec.mock_headers {
+            umbrella_content.push_str(&format!("#include \"{}\"\n", m.to_str().unwrap()));
+        }
+        std::fs::write(&umbrella_h_path, umbrella_content).unwrap();
+
+        // 2. Base Builder for this spec
+        let base_builder = global_base_builder.clone()
+            .header(umbrella_h_path.to_str().unwrap());
+
+        // Get relative path of the first header for binding hierarchy
+        let main_header = &spec.headers[0];
+        let rel_main_header = main_header.strip_prefix(&project_path).unwrap();
+        let main_parent_dir = rel_main_header.parent().unwrap();
+
+        // 3. Generate the main Spec Binding (`bindings/<path>/<spec_name>.rs`)
+        let out_binding_dir = bindings_path.join(main_parent_dir);
+        std::fs::create_dir_all(&out_binding_dir).unwrap();
+        let out_binding = out_binding_dir.join(format!("{}.rs", spec.name));
+        
+        let mut spec_builder = base_builder.clone()
+            .use_core()
+            .layout_tests(false)
+            .allowlist_type(".*")
+            .parse_callbacks(Box::new(bindgen::CargoCallbacks));
+
+        for h in &spec.headers {
+            let file_name = h.file_name().unwrap().to_str().unwrap();
+            let allowlist_pattern = format!(".*{}", file_name.replace(".", "\\.").replace("-", "_"));
+            spec_builder = spec_builder.allowlist_file(&allowlist_pattern);
+        }
+
+        spec_builder
+            .generate()
+            .unwrap()
+            .write_to_file(&out_binding)
+            .unwrap();
+
+        // 4. Generate the Per-Spec Mock Wrapper (`mocks/<path>/<spec_name>_mocks.rs`)
+        if !spec.mock_headers.is_empty() {
+            let out_mock_wrapper_dir = mocks_path.join(main_parent_dir);
+            std::fs::create_dir_all(&out_mock_wrapper_dir).unwrap();
+            let out_mock_wrapper = out_mock_wrapper_dir.join(format!("{}_mocks.rs", spec.name));
+            let mut wrapper_str = String::from("#![allow(ambiguous_glob_reexports)]\n\n");
+            
+            for m in &spec.mock_headers {
+                let rel_mock_path = m.strip_prefix(&project_path).unwrap();
+                let mock_file_stem = rel_mock_path.file_stem().unwrap().to_str().unwrap();
+                
+                // Calculate relative path from wrapper to global mock
+                // Wrapper is at mocks/<main_parent_dir>/<spec_name>_mocks.rs
+                // Global mock is at mocks/<mock_parent_dir>/mock_<mock_file_stem>.rs
+                
+                let mock_parent_dir = rel_mock_path.parent().unwrap();
+                let mut go_up = String::new();
+                for _ in 0..main_parent_dir.components().count() {
+                    go_up.push_str("../");
+                }
+                let relative_to_mock = format!("{}{}/mock_{}.rs", go_up, mock_parent_dir.to_string_lossy(), mock_file_stem);
+                
+                wrapper_str.push_str(&format!("pub mod mock_{} {{\n", mock_file_stem));
+                wrapper_str.push_str(&format!("    use crate::{}::*;\n", spec.name));
+                wrapper_str.push_str(&format!("    include!(\"{}\");\n", relative_to_mock));
+                wrapper_str.push_str("}\n");
+                wrapper_str.push_str(&format!("pub use mock_{}::*;\n\n", mock_file_stem));
+            }
+            std::fs::write(&out_mock_wrapper, wrapper_str).unwrap();
+        }
+    }
+    // 3. Compile all C sources into a static library
+    let mut build = cc::Build::new();
+    
+    if let Some(ref support_path) = config.support_header_files_path {
+        build.include(project_path.join(support_path));
+    }
+    
+    // Inject includes and defines from compile_commands.json
+    for inc in &extracted_args.includes {
+        build.include(inc);
+    }
+    for def in &extracted_args.defines {
+        let parts: Vec<&str> = def.splitn(2, '=').collect();
+        if parts.len() == 2 {
+            build.define(parts[0], Some(parts[1]));
+        } else {
+            build.define(parts[0], None);
+        }
+    }
+    
+    if extracted_args.includes.is_empty() {
+        let mut include_dirs = std::collections::HashSet::new();
+        let all_h_pattern = project_path.join("**/*.h");
+        for entry in glob(all_h_pattern.to_str().unwrap()).expect("Failed to read glob pattern") {
+            if let Ok(path) = entry {
+                if !is_excluded(&path, &config.exclude_header_files_paths, &project_path) {
+                    if let Some(parent) = path.parent() {
+                        include_dirs.insert(parent.to_path_buf());
+                    }
+                }
+            }
+        }
+        for dir in include_dirs {
+            build.include(dir);
+        }
+    }
+    
+    for src in &c_sources_to_compile {
+        build.file(src);
+    }
+    
+    if let Some(args) = config.compile_args {
+        for arg in args {
+            if arg.starts_with("-I") {
+                let path = arg.strip_prefix("-I").unwrap();
+                build.include(project_path.join(path));
+            } else {
+                build.flag_if_supported(&arg);
+            }
+        }
+    }
+    
+    // Output linker arguments if any
+    if let Some(ref linker_args) = config.linker_args {
+        for arg in linker_args {
+            println!("cargo:rustc-link-arg={}", arg);
+        }
+    }
+    
+    // Crucial for test isolation with GNU linker: put each function in its own section,
+    // so unused functions (like unmocked ones) can be garbage collected or overridden
+    // easily if necessary.
+    build.flag_if_supported("-ffunction-sections");
+    build.flag_if_supported("-fdata-sections");
+
+    build.compile("project");
 }

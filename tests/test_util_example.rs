@@ -1,43 +1,9 @@
-#![allow(non_upper_case_globals)]
-#![allow(non_camel_case_types)]
-#![allow(non_snake_case)]
-#![allow(unused)]
 #![feature(c_variadic)]
-
-include!("../bindings/util_example.rs");
-
-/*
-
-32 bit : apt-get install gcc-multilib
-sudo pip3 install gcovr
-cargo install grcov
-rustup component add llvm-tools-preview
-
-CARGO_INCREMENTAL=0 RUSTFLAGS='-Cinstrument-coverage' LLVM_PROFILE_FILE='cargo-test-%p-%m.profraw' cargo test
-
-grcov . --binary-path ./target/debug/deps/ -s .. -t html --branch --ignore-not-existing -o target/coverage/html
-
-*/
-
-/*
-
-use mockall::*;
-use mockall::{automock, mock, predicate::*};
-use mockall_double::double;
-
-mod outer {
-    use mockall::automock;
-
-    #[automock]
-    pub mod ffi {
-        include!("../bindings/log.rs");
-    }
-}
-
-#[double]
-use outer::ffi;
-
-*/
+#![allow(unused_mut, unused_variables, unused_assignments, unused_imports, non_snake_case)]
+#[allow(non_upper_case_globals, non_camel_case_types, non_snake_case, unused)]
+#[path = "../bindings/source/util/util_example.rs"]
+pub mod util_example;
+use util_example::*;
 
 #[cfg(test)]
 mod util_sum {
@@ -45,20 +11,18 @@ mod util_sum {
 
     #[test]
     fn sum__success() {
-        /*
-        let mock = func_context();
-        mock.expect().once().return_const(());
-*/      
+        // Pre Actions
         let mut result: ::core::ffi::c_int = 0;
 
+        // Test Steps
         unsafe {
-        //    result = util_sum(2, 7, 5);
+            // Step 1
+            result = util_example_sum(2, 7, 5);
+
+            // Step 2
+            assert_eq!(result, 12);
         }
-
-        //assert_eq!(result, 12);
     }
-
-    // another tests for util_sum
 }
 
 #[cfg(test)]
@@ -67,20 +31,20 @@ mod util_mult {
 
     #[test]
     fn multiplication__success() {
-        /*
-        let mock = func_context();
-        mock.expect().once().return_const(());
-*/      
-        let mut b : bool = false;
+        // Pre Actions
+        let mut b: bool = false;
         let mut out: ::core::ffi::c_int = 0;
 
+        // Test Steps
         unsafe {
-        //     b = util_mult(5, 7, &mut out);
+            // Step 1
+            b = util_example_mult(5, 7, &mut out);
+
+            // Step 2
+            assert_eq!(b, true);
+            
+            // Step 3
+            assert_eq!(out, 35);
         }
-
-        //assert_eq!(b, true);
-        //assert_eq!(out, 35);
     }
-
-    // another tests for util_mult
 }

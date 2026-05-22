@@ -7,10 +7,12 @@ edition = "2021"
 cc = { version = "1.0.80", features = ["parallel"] }
 bindgen = "0.66.1"
 toml = "0.7.6"
+glob = "0.3.1"
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
 
 [dependencies]
-mockall = { git = "https://github.com/Enes1313/mockall.git"}
-double = "0.2.4"
+mockall = { version = "0.14.0", features = ["nightly"] }
 mockall_double = "0.3.0"
 
 [package.metadata.foreigntest]
@@ -26,8 +28,8 @@ compile_args = [
     "-std=c99",
     "-fprofile-arcs",
     "-ftest-coverage",
-    "-m32",
     "-Wno-missing-field-initializers",
     "-funsigned-char",
+    "-m32",
 ]
 linker_args = ["--coverage", "-m32", "-lm"]
