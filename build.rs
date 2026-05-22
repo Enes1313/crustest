@@ -84,7 +84,7 @@ fn read_config(manifest_path: &std::path::Path) -> Option<Config> {
         std::io::Read::read_to_string(&mut manifest_file, &mut content)
             .expect("Failed to read Cargo.toml");
 
-        content.parse::<toml::Value>().expect("Failed to parse Cargo.toml")
+        content.parse::<toml::Table>().expect("Failed to parse Cargo.toml")
     };
 
     let foreigntest = cargo_toml
@@ -185,7 +185,7 @@ fn main() {
         for entry in glob(spec_path.join("**/*.toml").to_str().unwrap()).expect("Failed to read spec glob") {
             if let Ok(path) = entry {
                 let content = std::fs::read_to_string(&path).unwrap();
-                if let Ok(value) = content.parse::<toml::Value>() {
+                if let Ok(value) = content.parse::<toml::Table>() {
                     let relative_spec_path = path.strip_prefix(&spec_path).unwrap();
                     let spec_name = relative_spec_path.file_stem().unwrap().to_str().unwrap().to_string();
                     
@@ -295,7 +295,7 @@ fn main() {
             .layout_tests(false)
             .blocklist_type(".*")
             .allowlist_file(&allowlist_pattern)
-            .parse_callbacks(Box::new(bindgen::CargoCallbacks))
+            .parse_callbacks(Box::new(bindgen::CargoCallbacks::new()))
             .generate()
             .unwrap()
             .to_string();
@@ -351,7 +351,7 @@ fn main() {
             .use_core()
             .layout_tests(false)
             .allowlist_type(".*")
-            .parse_callbacks(Box::new(bindgen::CargoCallbacks));
+            .parse_callbacks(Box::new(bindgen::CargoCallbacks::new()));
 
         for h in &spec.headers {
             let file_name = h.file_name().unwrap().to_str().unwrap();
