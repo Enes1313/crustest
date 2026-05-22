@@ -1,4 +1,4 @@
-# Test with Rust (Ceedling Alternative) 🦀
+# Test with Rust 🦀
 
 This template provides a robust, highly automated, and memory-safe testing framework for C projects using Rust. It acts as a modern alternative to tools like Ceedling (Unity/CMock), bringing Rust's powerful ecosystem, strict type-checking, and parallel execution to legacy C codebases.
 
