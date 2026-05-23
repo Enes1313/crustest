@@ -6,13 +6,14 @@ use serde::Deserialize;
 #[allow(dead_code)]
 struct CompileCommand {
     directory: String,
-    command: String,
+    command: Option<String>,
+    arguments: Option<Vec<String>>,
     file: String,
 }
 
 #[derive(Debug, Default)]
 struct ExtractedArgs {
-    includes: std::collections::HashSet<String>,
+    includes: Vec<String>,
     defines: std::collections::HashSet<String>,
 }
 
@@ -21,7 +22,14 @@ fn extract_args_from_compile_commands(path: &std::path::Path) -> ExtractedArgs {
     if let Ok(content) = std::fs::read_to_string(path) {
         if let Ok(commands) = serde_json::from_str::<Vec<CompileCommand>>(&content) {
             for cmd in commands {
-                let mut parts = cmd.command.split_whitespace().peekable();
+                let parts_vec: Vec<String> = if let Some(cmd_str) = cmd.command {
+                    cmd_str.split_whitespace().map(|s| s.to_string()).collect()
+                } else if let Some(args) = cmd.arguments {
+                    args
+                } else {
+                    continue;
+                };
+                let mut parts = parts_vec.iter().map(|s| s.as_str()).peekable();
                 let dir_path = std::path::Path::new(&cmd.directory);
                 
                 while let Some(part) = parts.next() {
@@ -29,7 +37,10 @@ fn extract_args_from_compile_commands(path: &std::path::Path) -> ExtractedArgs {
                         if let Some(next) = parts.next() {
                             let p = std::path::Path::new(next);
                             let resolved = if p.is_absolute() { p.to_path_buf() } else { dir_path.join(p) };
-                            extracted.includes.insert(resolved.to_string_lossy().into_owned());
+                            let resolved_str = resolved.to_string_lossy().into_owned();
+                            if !extracted.includes.contains(&resolved_str) {
+                                extracted.includes.push(resolved_str);
+                            }
                         }
                     } else if part.starts_with("-I") || part.starts_with("-isystem") {
                         let path_str = if part.starts_with("-isystem") {
@@ -39,7 +50,10 @@ fn extract_args_from_compile_commands(path: &std::path::Path) -> ExtractedArgs {
                         };
                         let p = std::path::Path::new(path_str);
                         let resolved = if p.is_absolute() { p.to_path_buf() } else { dir_path.join(p) };
-                        extracted.includes.insert(resolved.to_string_lossy().into_owned());
+                        let resolved_str = resolved.to_string_lossy().into_owned();
+                        if !extracted.includes.contains(&resolved_str) {
+                            extracted.includes.push(resolved_str);
+                        }
                     } else if part == "-D" {
                         if let Some(next) = parts.next() {
                             extracted.defines.insert(next.to_string());
@@ -197,7 +211,9 @@ fn main() {
             }
         }
         for dir in include_dirs {
-            extracted_args.includes.insert(dir);
+            if !extracted_args.includes.contains(&dir) {
+                extracted_args.includes.push(dir);
+            }
         }
     }
 
