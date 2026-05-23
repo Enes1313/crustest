@@ -1,5 +1,7 @@
 # Test with Rust 🦀
 
+*Read this in other languages: [English](README.md), [Türkçe](README.tr.md)*
+
 This template provides a robust, highly automated, and memory-safe testing framework for C projects using Rust. It acts as a modern alternative to tools like Ceedling (Unity/CMock), bringing Rust's powerful ecosystem, strict type-checking, and parallel execution to legacy C codebases.
 
 ## ✨ Features
@@ -8,7 +10,7 @@ This template provides a robust, highly automated, and memory-safe testing frame
 - **Zero Boilerplate:** Defines mocks via simple `.toml` configuration files using arrays.
 - **Hierarchical Collision Protection:** Mirrors the C project's folder structure in the Rust environment, preventing naming collisions.
 - **Test Isolation:** Uses GNU Linker flags (`-ffunction-sections`, `-fdata-sections`) to ensure perfect test isolation and symbol resolution.
-- **Coverage Ready:** Automatically links `libgcov` when `--coverage` or `-fprofile-arcs` are passed, allowing seamless integration with `grcov` or `lcov`.
+- **Coverage Ready:** Supports seamless integration with `gcovr` by passing `--coverage` or `-fprofile-arcs` to both your compiler and linker arguments.
 
 ---
 
@@ -34,12 +36,12 @@ All framework settings are defined in `Cargo.toml` under `[package.metadata.fore
 
 ---
 
-## 🏗 System Architecture: Unit vs Integration Tests
+## 🏗 Architecture: Unit vs Integration Tests
 
-Since this template is designed to test an external C library, **all tests are technically Rust integration tests**. However, we logically divide them into Unit and Integration testing using Rust's folder structures.
+Since this template is designed to test an external C library, **all tests are technically Rust integration tests**. However, we logically divide them into Unit and Integration testing:
 
-**Integration Tests via TOML:**
-If you define multiple `.c` files in your `sources` array in the TOML file, `build.rs` will compile them together without mocking them. This effectively creates an Integration Test between those C modules!
+* **Unit Tests:** A unit test isolates a single C module by compiling its source file and mocking all its dependencies (other C modules it calls).
+* **Integration Tests:** An integration test compiles multiple C modules together without mocking their internal interactions, allowing you to test how they work as a subsystem.
 
 You can organize your tests within the `tests/` directory however you like:
 * **Per Module:** One test file (e.g., `test_app_example.rs`) containing all test functions for that module.
@@ -96,7 +98,57 @@ mod app_tests {
 }
 ```
 
-> **Warning:** C global `static` variables persist across multiple `#[test]` functions if they run in the same executable. To prevent state contamination, reset the C state manually at the start of each test or run tests with `--test-threads=1`.
+> **Warning:** C global `static` variables persist across multiple `#[test]` functions if they run in the same executable. To prevent state contamination, this framework enforces running tests sequentially by setting `RUST_TEST_THREADS = "1"` in `.cargo/config.toml`. You may also need to reset the C state manually at the start of each test.
+
+---
+
+## 🤝 How to Write an Integration Test
+
+Integration tests verify that multiple C modules work together correctly without mocking their interactions. 
+
+### 1. Define the Spec
+To create an integration test, define a `.toml` file (e.g., `spec/integration/app_subsystem.toml`) and include **multiple** source files in the `sources` array. Omit them from the `mocks` array so their real implementations are compiled and linked together.
+
+```toml
+headers = ["source/app/app_example.h", "source/util/util_example.h"]
+sources = ["source/app/app_example.c", "source/util/util_example.c"]
+# Notice we do NOT mock util_example here!
+mocks   = ["lib/lib_example"] 
+```
+
+### 2. Write the Test
+In your Rust test (`tests/test_app_subsystem.rs`), you can now call functions from `app_example.c` and assert that they correctly interact with the real `util_example.c` logic, while only mocking the external `lib_example` boundary.
+
+```rust
+// 1. Import the C types for both modules
+#[allow(non_upper_case_globals, non_camel_case_types, non_snake_case, unused)]
+#[path = "../bindings/integration/app_subsystem.rs"]
+pub mod app_subsystem;
+use app_subsystem::*;
+
+// 2. Import the Mocks (only lib_example is mocked)
+#[allow(non_snake_case, unused)]
+#[path = "../mocks/integration/app_subsystem_mocks.rs"]
+pub mod mocks;
+use mocks::*;
+
+#[cfg(test)]
+mod subsystem_tests {
+    use super::*;
+
+    #[test]
+    fn test_subsystem_integration() {
+        // We only mock the lower-level library
+        let ctx = mock_lib_example::lib_example_init_context();
+        ctx.expect().once().returning(|| true);
+        
+        unsafe {
+            // Calling this will internally call real util_example functions!
+            app_example_init(); 
+        }
+    }
+}
+```
 
 ---
 
@@ -124,6 +176,12 @@ To solve this, `.cargo/config.toml` defaults the `build.target` to `i686-unknown
 ```toml
 [build]
 target = "i686-unknown-linux-gnu"
+rustflags = ["-C", "instrument-coverage"]
+
+[env]
+RUST_TEST_THREADS = "1"
+CARGO_PROFILE_TEST_INCREMENTAL = "0"
+LLVM_PROFILE_FILE = "target/profraw/cargo-test-%p-%m.profraw"
 ```
 
 1. **If this 32-bit target is not installed on your system, you must add it first:**
@@ -141,7 +199,7 @@ target = "i686-unknown-linux-gnu"
 
 ## 🧪 Code Coverage
 
-To generate coverage reports, ensure `--coverage` or `-fprofile-arcs` is present in `compile_args`. `build.rs` will automatically detect this and link `libgcov`.
+To generate coverage reports, ensure `-fprofile-arcs` and `-ftest-coverage` (or `--coverage`) are present in `compile_args`, and `--coverage` is added to `linker_args` in your `Cargo.toml`.
 
 Run tests and generate an HTML report using `gcovr` (which perfectly handles GCC coverage):
 ```bash
@@ -153,5 +211,6 @@ cargo clean
 cargo test
 
 # 3. Generate HTML report
+mkdir -p coverage
 ~/.local/bin/gcovr -r ../test-c-project-for-rust --object-directory target/i686-unknown-linux-gnu/debug/build/ --html-details -o coverage/index.html
 ```
