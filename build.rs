@@ -163,7 +163,20 @@ fn main() {
         .canonicalize()
         .expect("Failed to canonicalize path");
 
-    let extracted_args = extract_args_from_compile_commands(&project_path.join(&config.compile_commands_path));
+    let mut extracted_args = extract_args_from_compile_commands(&project_path.join(&config.compile_commands_path));
+
+    if extracted_args.includes.is_empty() {
+        let all_h_pattern = project_path.join("**/*.h");
+        for entry in glob(all_h_pattern.to_str().unwrap()).expect("Failed to read glob pattern") {
+            if let Ok(path) = entry {
+                if !is_excluded(&path, &config.exclude_header_files_paths, &project_path) {
+                    if let Some(parent) = path.parent() {
+                        extracted_args.includes.insert(parent.to_string_lossy().into_owned());
+                    }
+                }
+            }
+        }
+    }
 
     let bindings_path = std::path::PathBuf::from("bindings");
     let mocks_path = std::path::PathBuf::from("mocks");
@@ -192,15 +205,13 @@ fn main() {
                     let mut spec_headers = Vec::new();
                     let mut spec_mock_headers = Vec::new();
 
-                    // Parse [headers] or fallback to [module]
+                    // Parse [headers] array
                     if let Some(headers) = value.get("headers").and_then(|v| v.as_array()) {
                         for header_val in headers {
                             if let Some(h_path) = header_val.as_str() {
                                 spec_headers.push(project_path.join(h_path));
                             }
                         }
-                    } else if let Some(header_rel_path) = value.get("module").and_then(|v| v.get("header")).and_then(|v| v.as_str()) {
-                        spec_headers.push(project_path.join(header_rel_path));
                     } else {
                         // Fallback Inference
                         let module_h = project_path.join(relative_spec_path.with_extension("h"));
@@ -243,7 +254,7 @@ fn main() {
     let out_dir_path = std::path::Path::new(&out_dir);
 
     // Build Global Base Builder
-    let mut global_base_builder = bindgen::Builder::default();
+    let mut global_base_builder = bindgen::Builder::default().prepend_enum_name(false);
     if let Some(ref support_path) = config.support_header_files_path {
         global_base_builder = global_base_builder.clang_arg(format!("-I{}", project_path.join(support_path).to_string_lossy()));
     }
@@ -416,22 +427,7 @@ fn main() {
         }
     }
     
-    if extracted_args.includes.is_empty() {
-        let mut include_dirs = std::collections::HashSet::new();
-        let all_h_pattern = project_path.join("**/*.h");
-        for entry in glob(all_h_pattern.to_str().unwrap()).expect("Failed to read glob pattern") {
-            if let Ok(path) = entry {
-                if !is_excluded(&path, &config.exclude_header_files_paths, &project_path) {
-                    if let Some(parent) = path.parent() {
-                        include_dirs.insert(parent.to_path_buf());
-                    }
-                }
-            }
-        }
-        for dir in include_dirs {
-            build.include(dir);
-        }
-    }
+    // extracted_args.includes already contains the fallback recursive dirs if needed
     
     for src in &c_sources_to_compile {
         build.file(src);
