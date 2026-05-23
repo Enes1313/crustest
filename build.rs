@@ -344,27 +344,14 @@ fn main() {
             .use_core()
             .layout_tests(false)
             .blocklist_type(".*")
+            .blocklist_var(".*")
             .allowlist_file(&allowlist_pattern)
             .parse_callbacks(Box::new(bindgen::CargoCallbacks::new()))
             .generate()
             .unwrap()
             .to_string();
             
-        let mut buffer = String::new();
-        for line in bindings_str_only_functions.lines() {
-            let trimmed = line.trim();
-            if trimmed.starts_with("#[") || trimmed.starts_with("//") {
-                buffer.push_str(line);
-                buffer.push('\n');
-            } else if trimmed.starts_with("pub static ") || trimmed.starts_with("pub mut ") || trimmed.starts_with("pub static mut ") {
-                buffer.clear();
-            } else {
-                mock_str.push_str(&buffer);
-                buffer.clear();
-                mock_str.push_str(line);
-                mock_str.push('\n');
-            }
-        }
+        mock_str.push_str(&bindings_str_only_functions);
         mock_str.push_str("}\n");
         mock_str.push_str("pub use mock_ffi::*;\n");
         std::fs::write(&out_mock, mock_str).unwrap();
