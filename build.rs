@@ -153,6 +153,27 @@ fn is_excluded(path: &PathBuf, exclude_patterns: &Option<Vec<String>>, project_p
     false
 }
 
+fn find_files(dir: &std::path::Path, ext: &str) -> Vec<std::path::PathBuf> {
+    let mut files = Vec::new();
+    if dir.is_dir() {
+        if let Ok(entries) = std::fs::read_dir(dir) {
+            for entry in entries.flatten() {
+                let path = entry.path();
+                if path.is_dir() {
+                    files.extend(find_files(&path, ext));
+                } else if path.is_file() {
+                    if let Some(e) = path.extension() {
+                        if e.to_string_lossy() == ext {
+                            files.push(path);
+                        }
+                    }
+                }
+            }
+        }
+    }
+    files
+}
+
 
 fn main() {
     let manifest_dir = std::env::var("CARGO_MANIFEST_DIR").expect("Failed to find manifest dir.");
@@ -166,15 +187,17 @@ fn main() {
     let mut extracted_args = extract_args_from_compile_commands(&project_path.join(&config.compile_commands_path));
 
     if extracted_args.includes.is_empty() {
-        let all_h_pattern = project_path.join("**/*.h");
-        for entry in glob(all_h_pattern.to_str().unwrap()).expect("Failed to read glob pattern") {
-            if let Ok(path) = entry {
-                if !is_excluded(&path, &config.exclude_header_files_paths, &project_path) {
-                    if let Some(parent) = path.parent() {
-                        extracted_args.includes.insert(parent.to_string_lossy().into_owned());
-                    }
+        let h_files = find_files(&project_path, "h");
+        let mut include_dirs = std::collections::HashSet::new();
+        for path in h_files {
+            if !is_excluded(&path, &config.exclude_header_files_paths, &project_path) {
+                if let Some(parent) = path.parent() {
+                    include_dirs.insert(parent.to_string_lossy().into_owned());
                 }
             }
+        }
+        for dir in include_dirs {
+            extracted_args.includes.insert(dir);
         }
     }
 
