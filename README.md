@@ -1,4 +1,4 @@
-# Test with Rust 🦀
+# crustest
 
 *Read this in other languages: [English](README.md), [Türkçe](README.tr.md)*
 
