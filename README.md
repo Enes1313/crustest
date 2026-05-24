@@ -4,6 +4,7 @@
 
 This template provides a robust, highly automated, and memory-safe testing framework for C projects using Rust. It acts as a modern alternative to tools like Ceedling (Unity/CMock), bringing Rust's powerful ecosystem, strict type-checking, and parallel execution to legacy C codebases.
 
+> 💡 **Tip:** For a complete working example demonstrating how to integrate this framework with a C project, please refer to the [test-c-project-for-rust](https://github.com/Enes1313/test-c-project-for-rust) repository.
 ## ✨ Features
 
 - **Automated Mock Generation:** Automatically generates mock modules for all C headers using `bindgen` and `mockall`.
