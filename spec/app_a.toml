@@ -1,3 +1,0 @@
-headers = ["source/app/app_a.h"]
-sources = ["source/app/app_a.c", "lib/lib_b.c"]
-mocks = ["lib/lib_b"]
