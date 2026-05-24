@@ -98,7 +98,7 @@ mod app_tests {
 }
 ```
 
-> **Warning:** C global `static` variables persist across multiple `#[test]` functions if they run in the same executable. To prevent state contamination, this framework enforces running tests sequentially by setting `RUST_TEST_THREADS = "1"` in `.cargo/config.toml`. You may also need to reset the C state manually at the start of each test.
+> **Warning:** C global `static` variables persist across multiple `#[test]` functions if they run in the same executable. To prevent state contamination and ensure test atomicity, this framework is configured with `RUST_TEST_THREADS = "1"` by default in `.cargo/config.toml`. If you do not have such issues, you can remove this line. You may also need to reset the C state manually at the start of each test.
 
 ---
 

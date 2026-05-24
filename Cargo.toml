@@ -1,5 +1,5 @@
 [package]
-name = "test-with-rust"
+name = "crustest"
 version = "1.0.0"
 edition = "2024"
 
@@ -16,17 +16,16 @@ mockall = { version = "0.14.0", features = ["nightly"] }
 mockall_double = "0.3.0"
 
 [package.metadata.foreigntest]
-project_path = "../test-c-project-for-rust"
-compile_commands_path = "compile_commands.json"
+project_path = "../c-project-source-path"
+compile_commands_path = "../c-project-source-path/compile_commands.json"
 exclude_header_files_paths = []
 extra_header_files_paths = []
-support_header_files_path = "test-with-rust/support"
+support_header_files_path = ""
 compile_args = [
     "-std=c99",
     "-fprofile-arcs",
     "-ftest-coverage",
     "-Wno-missing-field-initializers",
     "-funsigned-char",
-    "-m32",
 ]
-linker_args = ["--coverage", "-m32", "-lm"]
+linker_args = ["--coverage", "-lm"]
